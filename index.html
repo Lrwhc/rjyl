@@ -296,8 +296,8 @@ const Speech=(()=>{
   function quality(v){
     if(!v)return 0;
     const s=((v.voiceURI||'')+' '+(v.name||'')).toLowerCase();
-    if(s.includes('premium'))return 3;
-    if(s.includes('enhanced')||s.includes('拡張')||s.includes('增强'))return 2;
+    if(s.includes('premium')||s.includes('高级')||s.includes('高級')||s.includes('プレミアム'))return 3;
+    if(s.includes('enhanced')||s.includes('拡張')||s.includes('增强')||s.includes('優化')||s.includes('优化'))return 2;
     if(s.includes('eloquence'))return 0;
     if(s.includes('compact'))return 1;
     return 1.5;
@@ -309,8 +309,12 @@ const Speech=(()=>{
     const prefs=lang==='ja-JP'?['kyoko','o-ren','oren','hattori','otoya']:['ava','samantha','zoe','allison','nicky','joelle','susan','evan','nathan','noelle','aaron','alex','tom'];
     const pool=voices.filter(v=>v.lang&&v.lang.replace('_','-').toLowerCase().startsWith(lang.slice(0,2).toLowerCase()));
     const exact=pool.filter(v=>v.lang.replace('_','-').toLowerCase()===lang.toLowerCase());
-    const cand=(exact.length?exact:pool).slice().sort((a,b)=>quality(b)-quality(a)); // 高质量优先
-    for(const p of prefs){const v=cand.find(v=>v.name.toLowerCase().includes(p));if(v)return v;}
+    // 审核中改：原来先按 prefs 名字顺序找，kyoko 排在第一位，
+    // 而 iOS 出厂就装了 Kyoko 紧凑版 —— 于是永远命中它，用户新装的
+    // O-ren 增强版根本轮不到。「高质量优先」那句注释当时是假的。
+    // 现在：音质是主键，名字偏好降为同音质时的次键。
+    const rank=v=>{const n=(v.name||'').toLowerCase();const i=prefs.findIndex(p=>n.includes(p));return i<0?prefs.length:i;};
+    const cand=(exact.length?exact:pool).slice().sort((a,b)=>quality(b)-quality(a)||rank(a)-rank(b));
     return cand[0]||null;
   }
   /* 仅美音的多说话人池（按质量排序、同名保留最高质量版本） */
@@ -331,7 +335,11 @@ const Speech=(()=>{
   function speak(text,lang,opts={}){
     if(!synth){App.toast('此浏览器不支持语音朗读');return;}
     try{synth.cancel();}catch(e){}
-    const u=new SpeechSynthesisUtterance(text);
+    // 日语：屏幕上的分词空格是给人看的；喂进 TTS 会被当成停顿边界，
+    // 引擎就不做自己的文节切分了，结果是一个词一个词往外蹦（"生硬"的主因之一）
+    let _t=String(text);
+    if(String(lang||'').toLowerCase().indexOf('ja')===0&&!opts.keepSpace&&DB.get('jaNoSpace',1))_t=_t.replace(/[ \u3000]+/g,'');
+    const u=new SpeechSynthesisUtterance(_t);
     u.lang=lang;
     const v=opts.voice||pick(lang);if(v){u.voice=v;u.lang=v.lang||lang;}
     const base=Math.min(1.2,Math.max(0.6,+DB.get('rate',0.95)||0.95));
@@ -17758,7 +17766,8 @@ const App=(()=>{
       const auto=Speech.pick(lang);
       return `<select onchange="App.setVoice('${lang}',this.value)">
         <option value="">自动${auto?'（'+esc(auto.name)+'）':''}</option>
-        ${list.map(v=>`<option value="${esc(v.voiceURI)}" ${cur===v.voiceURI?'selected':''}>${esc(v.name)}</option>`).join('')}
+        ${list.map(v=>{const q=Speech.quality(v);const qt=q>=3?' · 高级版':q>=2?' · 增强版':q<=0?' · 机械音':q<=1?' · 紧凑版':'';
+          return `<option value="${esc(v.voiceURI)}" ${cur===v.voiceURI?'selected':''}>${esc(v.name)}${qt}</option>`;}).join('')}
       </select>`;
     };
     return `<div class="topbar"><h1>我的</h1></div>
@@ -17781,6 +17790,9 @@ const App=(()=>{
     <div class="card">
       <h2>语音设置</h2>
       <div class="setrow"><span>日语声音</span>${vSel('ja-JP',jaVoices)}</div>
+      <div class="setrow"><span>日语断句 <span class="muted" style="font-weight:400">屏幕上照旧显示分词</span></span><select onchange="App.setJaSpace(this.value)" aria-label="日语断句">${[['1','去掉空格（更连贯）'],['0','保留空格（逐词）']].map(([v,l])=>`<option value="${v}" ${String(DB.get('jaNoSpace',1)?1:0)===v?'selected':''}>${l}</option>`).join('')}</select></div>
+      <div class="setrow" style="display:block"><button class="btn soft" style="width:100%" onclick="App.jaAB()">🔊 两种断句连续对比（听完再选）</button>
+      <div class="muted" style="margin-top:6px;font-size:12.5px">先念保留空格版，停一下，再念去空格版。听哪个像人说话就选哪个。</div></div>
       <div class="setrow"><span>英语声音</span>${vSel('en-US',enVoices)}</div>
       <div class="setrow"><span>语速 <span class="muted" id="ratev">${(+DB.get('rate',0.95)||0.95)}</span></span><input type="range" min="0.6" max="1.2" step="0.05" value="${Math.min(1.2,Math.max(0.6,+DB.get('rate',0.95)||0.95))}" oninput="App.setRate(this.value)" aria-label="朗读语速"></div>
       <div class="setrow"><span>每日复习上限</span><select onchange="App.setRevCap(this.value)" aria-label="每日复习上限">${[20,40,60,100,999].map(v=>`<option value="${v}" ${+DB.get('revCap',40)===v?'selected':''}>${v===999?'不限':v+' 张/组'}</option>`).join('')}</select></div>
@@ -17935,6 +17947,15 @@ const App=(()=>{
     setRevCap:v=>{DB.set('revCap',+v);toast('已设置复习上限');},
     setNewCap:v=>{DB.set('newCap',+v);toast('已设置每日新卡上限');render();},
     setRomaji:v=>{DB.set('romaji',['auto','on','off'].includes(v)?v:'auto');toast('已设置罗马音显示');},
+    setJaSpace:v=>{DB.set('jaNoSpace',v==='1');toast(v==='1'?'日语将连贯朗读':'日语将按空格逐词朗读');},
+    jaAB:()=>{
+      const s='まっすぐ いって、つぎの しんごうで みぎに まがって ください';
+      toast('①保留空格版');
+      Speech.speak(s,'ja-JP',{keepSpace:true,onend:()=>setTimeout(()=>{
+        toast('②去空格版');
+        Speech.speak(s.replace(/[ \u3000]+/g,''),'ja-JP',{keepSpace:true});
+      },700)});
+    },
     setMvoice:v=>{DB.set('mvoice',v==='1');toast(v==='1'?'对话将分角色朗读':'已关闭多声源');},
     setAccents:v=>{DB.set('accents',v==='all'?'all':'us');toast(v==='all'?'已开启多口音混合':'已设置为仅美音');render();},
     startReview,reveal,grade,exitReview,
