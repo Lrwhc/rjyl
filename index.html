@@ -292,29 +292,41 @@ const Speech=(()=>{
   // Chrome 桌面版长句暂停 bug 的保险丝
   setInterval(()=>{try{if(synth&&synth.speaking&&synth.paused)synth.resume();}catch(e){}},3000);
   document.addEventListener('visibilitychange',()=>{if(document.hidden)stop();});
-  /* 声音质量分：高级版3 > 增强版2 > 普通1.5 > 标准compact 1 > Eloquence 0（机械感最重） */
+  /* 声音质量分：高级版3 > 增强版2 > 普通1.5 > 标准compact 1 > 趣味音/老式合成音 0（永不自动选） */
+  const NOVELTY=['eloquence','albert','bad news','bahh','bells','boing','bubbles','cellos','deranged','fred','good news','hysterical','jester','junior','kathy','organ','ralph','superstar','trinoids','whisper','wobble','zarvox'];
   function quality(v){
     if(!v)return 0;
     const s=((v.voiceURI||'')+' '+(v.name||'')).toLowerCase();
+    if(NOVELTY.some(k=>s.includes(k)))return 0;
     if(s.includes('premium')||s.includes('高级')||s.includes('高級')||s.includes('プレミアム'))return 3;
     if(s.includes('enhanced')||s.includes('拡張')||s.includes('增强')||s.includes('優化')||s.includes('优化'))return 2;
-    if(s.includes('eloquence'))return 0;
     if(s.includes('compact'))return 1;
     return 1.5;
   }
+  /* 已验听过的好声音名单。排序时它是主键——否则任何「没见过所以给 1.5 分」的
+     陌生声音都会压过 iOS 自带的 Ava/Samantha 紧凑版(1分)，被自动选中。
+     v2.6 就是这么把英语选成怪声音的。 */
+  const PREF_JA=['kyoko','o-ren','oren','hattori','otoya'];
+  const PREF_EN=['ava','samantha','zoe','allison','nicky','joelle','susan','evan','nathan','noelle','aaron','alex','tom'];
+  const prefsFor=lang=>String(lang||'').toLowerCase().indexOf('ja')===0?PREF_JA:PREF_EN;
+  const prefIdx=(v,prefs)=>{const n=(v.name||'').toLowerCase();return prefs.findIndex(p=>n.includes(p));};
+  /* ①在名单里的优先 ②同为名单内则音质高的优先 ③再按名单先后 */
+  function voiceCmp(prefs){return (a,b)=>{
+    const ia=prefIdx(a,prefs),ib=prefIdx(b,prefs);
+    return ((ia<0)-(ib<0))||(quality(b)-quality(a))||(ia<0?0:ia-ib);
+  };}
   function pick(lang){
     load();
     const saved=DB.get('voice.'+lang,null);
     if(saved){const v=voices.find(v=>v.voiceURI===saved);if(v)return v;}
-    const prefs=lang==='ja-JP'?['kyoko','o-ren','oren','hattori','otoya']:['ava','samantha','zoe','allison','nicky','joelle','susan','evan','nathan','noelle','aaron','alex','tom'];
+    const prefs=prefsFor(lang);
     const pool=voices.filter(v=>v.lang&&v.lang.replace('_','-').toLowerCase().startsWith(lang.slice(0,2).toLowerCase()));
     const exact=pool.filter(v=>v.lang.replace('_','-').toLowerCase()===lang.toLowerCase());
-    // 审核中改：原来先按 prefs 名字顺序找，kyoko 排在第一位，
-    // 而 iOS 出厂就装了 Kyoko 紧凑版 —— 于是永远命中它，用户新装的
-    // O-ren 增强版根本轮不到。「高质量优先」那句注释当时是假的。
-    // 现在：音质是主键，名字偏好降为同音质时的次键。
-    const rank=v=>{const n=(v.name||'').toLowerCase();const i=prefs.findIndex(p=>n.includes(p));return i<0?prefs.length:i;};
-    const cand=(exact.length?exact:pool).slice().sort((a,b)=>quality(b)-quality(a)||rank(a)-rank(b));
+    // v2.6 原来只按 quality 排序，结果陌生声音(1.5) 压过 Ava/Samantha 紧凑版(1)，
+    // 英语被自动选成怪声音。现在用 voiceCmp：先「是不是已验听过的」，再比音质。
+    // 这样 Kyoko紧凑(1) vs O-ren增强(2) 仍然是 O-ren 赢（两者都在名单内），
+    // 而 Ava紧凑(1) vs 陌生音(1.5) 是 Ava 赢（只有 Ava 在名单内）。
+    const cand=(exact.length?exact:pool).slice().sort(voiceCmp(prefs));
     return cand[0]||null;
   }
   /* 仅美音的多说话人池（按质量排序、同名保留最高质量版本） */
@@ -322,7 +334,7 @@ const Speech=(()=>{
     load();
     const out=[];const seen=new Set();
     voices.filter(v=>v.lang&&v.lang.replace('_','-').toLowerCase()==='en-us')
-      .sort((a,b)=>quality(b)-quality(a))
+      .sort(voiceCmp(PREF_EN))
       .forEach(v=>{
         if(quality(v)<=0)return;
         const k=v.name.replace(/\s*[\(（].*/,'').toLowerCase();
